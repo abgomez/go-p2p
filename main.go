@@ -4,22 +4,27 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"flag"
+	"crypto/rsa"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"log"
 	random "math/rand"
 	"os"
 	"time"
 
+	crypto "github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
-	crypto "github.com/libp2p/go-libp2p-crypto"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pstore "github.com/libp2p/go-libp2p-peerstore"
 	"github.com/libp2p/go-libp2p/p2p/discovery"
 	"github.com/multiformats/go-multiaddr"
 )
+
+// var cfg = parseFlags()
+var reader = rand.Reader
 
 type discoveryNotifee struct {
 	host host.Host
@@ -42,8 +47,17 @@ func handleStream(stream network.Stream) {
 	// Create a buffer stream for non blocking read and write.
 	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 
+	// reader := rand.Reader
+	prvKey, pubKey, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, reader)
+	// prvKey, pubKey, err := crypto.GenerateKeyPairWithReader(crypto.Ed25519, 2048, r)
+	// prvKey, pubKey, err := crypto.GenerateKeyPairWithReader(crypto.Secp256k1, 2048, r)
+	// prvKey, pubKey, err := crypto.GenerateKeyPairWithReader(crypto.ECDSA, 2048, r)
+	if err != nil {
+		panic(err)
+	}
+
 	go readData(rw)
-	go writeData(rw)
+	go writeData(rw, prvKey, pubKey)
 
 	// 'stream' will stay open until you close it (or the other side closes it).
 }
@@ -64,8 +78,20 @@ func readData(rw *bufio.ReadWriter) {
 	}
 }
 
-func writeData(rw *bufio.ReadWriter) {
-	// stdReader := bufio.NewReader(os.Stdin)
+func writeData(rw *bufio.ReadWriter, prvKey crypto.PrivKey, pubKey crypto.PubKey) {
+	message := []byte("message to be signed")
+	hashed := sha256.Sum256(message)
+
+	signature, err := prvKey.Sign(hashed[:])
+	if err != nil {
+		panic(err)
+	}
+	log.Printf("signature: %x\n", signature)
+
+	_, err = pubKey.Verify(hashed[:], signature)
+	if err != nil {
+		panic(err)
+	}
 
 	for {
 		// fmt.Print("> ")
@@ -76,6 +102,7 @@ func writeData(rw *bufio.ReadWriter) {
 		// }
 
 		// rw.WriteString(fmt.Sprintf("%s\n", sendData))
+		//TODO ADD sensor and signing  mechanism
 		location := fmt.Sprint(random.Intn(9999)) + "," + fmt.Sprint(random.Intn(9999))
 		rw.WriteString(fmt.Sprintf("%s\n", location))
 		rw.Flush()
@@ -101,38 +128,121 @@ func dhtInfo(node peer.ID, dhts *dht.IpfsDHT) {
 	fmt.Println(dhts.FindPeer(context.Background(), node))
 }
 
+func getRSAkeys(src io.Reader, bits int) (*rsa.PrivateKey, error) {
+	keys, err := rsa.GenerateKey(src, bits)
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
 func main() {
 	var kademliaDHT *dht.IpfsDHT
 
-	help := flag.Bool("help", false, "Display Help")
-	// cfg := parseFlags()
-
-	if *help {
-		fmt.Printf("Simple example for peer discovery using mDNS. mDNS is great when you have multiple peers in local LAN.")
-		fmt.Println("Usage: ./peer")
-		os.Exit(0)
-	}
-
 	ctx := context.Background()
 
+	start := time.Now()
 	// TODO: use PUF to create Deterministic keys
-	reader := rand.Reader
+	// bs := make([]byte, 4)
+	// binary.LittleEndian.PutUint32(bs, 31415926)
+	// reader := bytes.NewReader(bs)
+	// reader := rand.Reader
+	// log.Printf("signature: %x\n", []byte(reader))
+
+	// c := 10
+	// b := make([]byte, c)
+	// _, err := rand.Read(b)
+	// if err != nil {
+	// 	fmt.Println("error:", err)
+	// 	return
+	// }
+	// // The slice should now contain random bytes instead of only zeroes.
+	// fmt.Println(bytes.Equal(b, make([]byte, c)))
+	// fmt.Println(b)
 
 	// Create new key pair for this host.
-	prvKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, reader)
-	// prvKey, pubKey, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, reader)
+	prvKey, pubKey, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, reader)
 	// prvKey, pubKey, err := crypto.GenerateKeyPairWithReader(crypto.Ed25519, 2048, r)
 	// prvKey, pubKey, err := crypto.GenerateKeyPairWithReader(crypto.Secp256k1, 2048, r)
 	// prvKey, pubKey, err := crypto.GenerateKeyPairWithReader(crypto.ECDSA, 2048, r)
 	if err != nil {
 		panic(err)
 	}
+	log.Println("Time to generate peer ID: ", time.Since(start))
+
+	// if cfg.CryptoType == "rsa" {
+	// 	prvKey, pubKey, err := crypto.GenerateRSAKeyPair(2048, reader)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+
+	// 	signature, err := prvKey.Sign(hashed[:])
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	log.Printf("RSA signature: %x\n", signature)
+
+	// 	_, err = pubKey.Verify(hashed[:], signature)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// } else if cfg.CryptoType == "ed" {
+	// 	prvKey, pubKey, err := crypto.GenerateEd25519Key(reader)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+
+	// 	signature, err := prvKey.Sign(hashed[:])
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	log.Printf("Ed25519 signature: %x\n", signature)
+
+	// 	_, err = pubKey.Verify(hashed[:], signature)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// } else if cfg.CryptoType == "sec" {
+	// 	prvKey, pubKey, err := crypto.GenerateSecp256k1Key(reader)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+
+	// 	signature, err := prvKey.Sign(hashed[:])
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	log.Printf("Secp256k1 signature: %x\n", signature)
+
+	// 	_, err = pubKey.Verify(hashed[:], signature)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// } else if cfg.CryptoType == "ecd" {
+	// 	prvKey, pubKey, err := crypto.GenerateECDSAKeyPair(reader)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+
+	// 	signature, err := prvKey.Sign(hashed[:])
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	log.Printf("ECDSA signature: %x\n", signature)
+
+	// 	_, err = pubKey.Verify(hashed[:], signature)
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// }
 
 	// Create new peer
 	node, err := createPeer(prvKey)
 	if err != nil {
 		panic(err)
 	}
+
+	log.Printf("size of ID: %d", node.ID().Size())
 
 	// Start a DHT, for use in peer discovery. We can't just make a new DHT
 	// client because we want each peer to maintain its own local copy of the DHT
@@ -175,25 +285,10 @@ func main() {
 			rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 
 			// Create a thread to read and write data.
-			go writeData(rw)
+			go writeData(rw, prvKey, pubKey)
 			go readData(rw)
 		}
 	}
-
-	// select {}
-
-	// peerChan := initMDNS(ctx, node, cfg.RendezvousString)
-
-	// select {
-	// case peer := <-initMDNS(ctx, node, cfg.RendezvousString):
-	// 	fmt.Println("Found peer:", peer, ", connecting")
-	// 	fmt.Println(kademliaDHT.FindPeer(ctx, peer.ID))
-	// default:
-	// 	fmt.Println("No peer Found")
-	// }
-
-	// peer := <-peerChan // will block untill we discover a peer
-	// fmt.Println("Found peer:", peer, ", connecting")
 
 	for {
 		reader := bufio.NewReader(os.Stdin)
